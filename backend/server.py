@@ -11,6 +11,11 @@ from typing import List, Optional
 import uuid
 from datetime import datetime
 import jwt
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 
 ROOT_DIR = Path(__file__).parent
@@ -25,6 +30,15 @@ db = client[os.environ.get('DB_NAME', 'zeny_ai')]
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-here')
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
+
+# Gemini API Configuration
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyA5DClgaFghusD3zcpsb_tQUyBCpzskfg0')
+if GEMINI_AVAILABLE:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Use Gemini 2.5 Pro as requested
+    model = genai.GenerativeModel('gemini-2.5-pro')
+else:
+    model = None
 
 # Create the main app without a prefix
 app = FastAPI(title="Zeny AI", description="AI Avatar Communication System")
@@ -106,14 +120,41 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# Simulated AI response function
-def generate_ai_response(avatar: Avatar, user_message: str) -> str:
-    return f"Hi! I'm {avatar['name']}. {avatar['personality']} You said: '{user_message}'. Here's my response based on my instructions: {avatar['instructions'][:100]}..."
+# AI response function using Gemini
+async def generate_ai_response(avatar: dict, user_message: str) -> str:
+    if GEMINI_AVAILABLE and model:
+        try:
+            # Create a personalized prompt for the avatar
+            system_prompt = f"""You are {avatar['name']}, an AI avatar with the following characteristics:
+
+Description: {avatar['description']}
+Personality: {avatar['personality']}
+Instructions: {avatar['instructions']}
+
+You should respond in character as {avatar['name']} with the specified personality. Be natural, engaging, and follow your instructions. Keep responses conversational and appropriately sized for a chat interface (1-3 paragraphs maximum).
+
+User message: {user_message}
+
+Respond as {avatar['name']}:"""
+
+            response = model.generate_content(system_prompt)
+            return response.text.strip()
+        except Exception as e:
+            # Fallback to simulated response if Gemini fails
+            logger.error(f"Gemini API error: {e}")
+            return f"Hi! I'm {avatar['name']}. {avatar['personality']} You said: '{user_message}'. I'm experiencing some technical difficulties, but I'm here to help! Can you tell me more about what you'd like to know?"
+    else:
+        # Fallback simulated response when Gemini is not available
+        return f"Hi! I'm {avatar['name']}. {avatar['personality']} You said: '{user_message}'. Here's my response based on my instructions: {avatar['instructions'][:100]}..."
 
 # Routes
 @api_router.get("/")
 async def root():
-    return {"message": "Welcome to Zeny AI - AI Avatar Communication System"}
+    return {
+        "message": "Welcome to Zeny AI - AI Avatar Communication System",
+        "gemini_available": GEMINI_AVAILABLE,
+        "model_ready": model is not None
+    }
 
 # Admin Authentication Routes
 @api_router.post("/admin/login", response_model=AdminToken)
@@ -176,7 +217,7 @@ async def chat_with_avatar(chat_input: ChatInput):
     if not avatar:
         raise HTTPException(status_code=404, detail="Avatar not found")
     
-    ai_response = generate_ai_response(avatar, chat_input.message)
+    ai_response = await generate_ai_response(avatar, chat_input.message)
     
     # Save chat history
     chat_message = ChatMessage(
