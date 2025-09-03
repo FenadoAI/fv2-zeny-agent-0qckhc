@@ -6,7 +6,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Send, Bot, User, Sparkles } from "lucide-react";
+import { Send, Bot, User, Sparkles, Settings } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiService } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -16,11 +17,14 @@ const Home = () => {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState('');
   const { toast } = useToast();
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     fetchAvatars();
+    fetchModels();
   }, []);
 
   useEffect(() => {
@@ -47,6 +51,20 @@ const Home = () => {
     }
   };
 
+  const fetchModels = async () => {
+    try {
+      const response = await apiService.getAvailableModels();
+      setAvailableModels(response.data.available_models);
+      setSelectedModel(response.data.default_model);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to load models",
+        variant: "destructive",
+      });
+    }
+  };
+
   const sendMessage = async () => {
     if (!inputMessage.trim() || !selectedAvatar || isLoading) return;
 
@@ -60,14 +78,16 @@ const Home = () => {
     try {
       const response = await apiService.chatWithAvatar({
         avatar_id: selectedAvatar.id,
-        message: userMessage
+        message: userMessage,
+        model: selectedModel
       });
 
       // Add avatar response to chat
       setMessages(prev => [...prev, { 
         type: "avatar", 
         content: response.data.response,
-        avatarName: response.data.avatar_name
+        avatarName: response.data.avatar_name,
+        modelUsed: response.data.model_used
       }]);
     } catch (error) {
       toast({
@@ -106,7 +126,7 @@ const Home = () => {
           <p className="text-lg text-gray-600 max-w-2xl mx-auto">
             Chat with AI Avatars that speak on behalf of real people. Each avatar has unique personalities and knowledge.
           </p>
-          <div className="mt-4">
+          <div className="mt-4 space-y-4">
             <Button 
               variant="outline" 
               onClick={() => window.location.href = '/admin'}
@@ -114,6 +134,29 @@ const Home = () => {
             >
               Admin Access
             </Button>
+            
+            {/* Model Selector */}
+            {availableModels.length > 0 && (
+              <div className="flex items-center justify-center gap-3">
+                <Settings className="h-4 w-4 text-gray-500" />
+                <span className="text-sm text-gray-600">AI Model:</span>
+                <Select value={selectedModel} onValueChange={setSelectedModel}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableModels.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        <div className="flex flex-col">
+                          <span className="font-medium">{model.name}</span>
+                          <span className="text-xs text-gray-500">{model.rate_limit}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
         </div>
 
@@ -217,6 +260,11 @@ const Home = () => {
                             : 'bg-gray-100 text-gray-900'
                         }`}>
                           <p className="text-sm">{message.content}</p>
+                          {message.type === 'avatar' && message.modelUsed && (
+                            <p className="text-xs text-gray-500 mt-1 italic">
+                              via {availableModels.find(m => m.id === message.modelUsed)?.name || message.modelUsed}
+                            </p>
+                          )}
                         </div>
                         
                         {message.type === 'user' && (

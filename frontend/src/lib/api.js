@@ -32,6 +32,9 @@ export const apiService = {
   getAvatars: () => api.get('/avatars'),
   getAvatar: (avatarId) => api.get(`/avatars/${avatarId}`),
   chatWithAvatar: (chatData) => api.post('/chat', chatData),
+  
+  // Models API
+  getAvailableModels: () => api.get('/models'),
 };
 
 export default api;

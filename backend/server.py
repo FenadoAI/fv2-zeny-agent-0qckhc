@@ -33,12 +33,45 @@ security = HTTPBearer()
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyA5DClgaFghusD3zcpsb_tQUyBCpzskfg0')
+DEFAULT_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.5-pro')
+
+# Available Gemini models
+AVAILABLE_MODELS = {
+    'gemini-2.5-pro': {
+        'name': 'Gemini 2.5 Pro',
+        'description': 'Most capable model with advanced reasoning',
+        'rate_limit': '2 requests/minute (free tier)'
+    },
+    'gemini-2.5-flash': {
+        'name': 'Gemini 2.5 Flash',
+        'description': 'Fast and efficient for most tasks',
+        'rate_limit': '15 requests/minute (free tier)'
+    }
+}
+
+# Global model cache
+model_cache = {}
+
 if GEMINI_AVAILABLE:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Use Gemini 2.5 Pro as requested
-    model = genai.GenerativeModel('gemini-2.5-pro')
-else:
-    model = None
+    # Initialize default model
+    model_cache[DEFAULT_MODEL] = genai.GenerativeModel(DEFAULT_MODEL)
+
+def get_model(model_name: str = DEFAULT_MODEL):
+    """Get or create a Gemini model instance"""
+    if not GEMINI_AVAILABLE:
+        return None
+    
+    if model_name not in model_cache:
+        if model_name in AVAILABLE_MODELS:
+            model_cache[model_name] = genai.GenerativeModel(model_name)
+        else:
+            # Fallback to default model
+            model_name = DEFAULT_MODEL
+            if model_name not in model_cache:
+                model_cache[model_name] = genai.GenerativeModel(model_name)
+    
+    return model_cache[model_name]
 
 # Create the main app without a prefix
 app = FastAPI(title="Zeny AI", description="AI Avatar Communication System")
@@ -98,10 +131,22 @@ class ChatMessage(BaseModel):
 class ChatInput(BaseModel):
     avatar_id: str
     message: str
+    model: Optional[str] = DEFAULT_MODEL
 
 class ChatResponse(BaseModel):
     response: str
     avatar_name: str
+    model_used: str
+
+class ModelInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+    rate_limit: str
+
+class ModelsResponse(BaseModel):
+    available_models: List[ModelInfo]
+    default_model: str
 
 # Authentication functions
 def verify_admin_credentials(username: str, password: str) -> bool:
@@ -121,11 +166,13 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # AI response function using Gemini
-async def generate_ai_response(avatar: dict, user_message: str) -> str:
-    if GEMINI_AVAILABLE and model:
+async def generate_ai_response(avatar: dict, user_message: str, model_name: str = DEFAULT_MODEL) -> str:
+    if GEMINI_AVAILABLE:
         try:
-            # Create a personalized prompt for the avatar
-            system_prompt = f"""You are {avatar['name']}, an AI avatar with the following characteristics:
+            selected_model = get_model(model_name)
+            if selected_model:
+                # Create a personalized prompt for the avatar
+                system_prompt = f"""You are {avatar['name']}, an AI avatar with the following characteristics:
 
 Description: {avatar['description']}
 Personality: {avatar['personality']}
@@ -137,15 +184,15 @@ User message: {user_message}
 
 Respond as {avatar['name']}:"""
 
-            response = model.generate_content(system_prompt)
-            return response.text.strip()
+                response = selected_model.generate_content(system_prompt)
+                return response.text.strip()
         except Exception as e:
             # Fallback to simulated response if Gemini fails
             logger.error(f"Gemini API error: {e}")
             return f"Hi! I'm {avatar['name']}. {avatar['personality']} You said: '{user_message}'. I'm experiencing some technical difficulties, but I'm here to help! Can you tell me more about what you'd like to know?"
-    else:
-        # Fallback simulated response when Gemini is not available
-        return f"Hi! I'm {avatar['name']}. {avatar['personality']} You said: '{user_message}'. Here's my response based on my instructions: {avatar['instructions'][:100]}..."
+    
+    # Fallback simulated response when Gemini is not available
+    return f"Hi! I'm {avatar['name']}. {avatar['personality']} You said: '{user_message}'. Here's my response based on my instructions: {avatar['instructions'][:100]}..."
 
 # Routes
 @api_router.get("/")
@@ -153,8 +200,28 @@ async def root():
     return {
         "message": "Welcome to Zeny AI - AI Avatar Communication System",
         "gemini_available": GEMINI_AVAILABLE,
-        "model_ready": model is not None
+        "default_model": DEFAULT_MODEL,
+        "available_models": len(AVAILABLE_MODELS)
     }
+
+# Models endpoint
+@api_router.get("/models", response_model=ModelsResponse)
+async def get_available_models():
+    """Get available Gemini models"""
+    models = [
+        ModelInfo(
+            id=model_id,
+            name=model_info['name'],
+            description=model_info['description'],
+            rate_limit=model_info['rate_limit']
+        )
+        for model_id, model_info in AVAILABLE_MODELS.items()
+    ]
+    
+    return ModelsResponse(
+        available_models=models,
+        default_model=DEFAULT_MODEL
+    )
 
 # Admin Authentication Routes
 @api_router.post("/admin/login", response_model=AdminToken)
@@ -217,7 +284,12 @@ async def chat_with_avatar(chat_input: ChatInput):
     if not avatar:
         raise HTTPException(status_code=404, detail="Avatar not found")
     
-    ai_response = await generate_ai_response(avatar, chat_input.message)
+    # Use selected model or default
+    selected_model = chat_input.model or DEFAULT_MODEL
+    if selected_model not in AVAILABLE_MODELS:
+        selected_model = DEFAULT_MODEL
+    
+    ai_response = await generate_ai_response(avatar, chat_input.message, selected_model)
     
     # Save chat history
     chat_message = ChatMessage(
@@ -227,7 +299,11 @@ async def chat_with_avatar(chat_input: ChatInput):
     )
     await db.chat_history.insert_one(chat_message.dict())
     
-    return ChatResponse(response=ai_response, avatar_name=avatar["name"])
+    return ChatResponse(
+        response=ai_response, 
+        avatar_name=avatar["name"],
+        model_used=selected_model
+    )
 
 @api_router.get("/admin/chat-history", response_model=List[ChatMessage])
 async def get_chat_history(admin: str = Depends(verify_token)):
